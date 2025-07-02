@@ -5,233 +5,236 @@ from models import User, Note
 # For simplicity now, we'll assume they are accessible globally from app.py,
 # which is not ideal but works for a single file structure that will be combined later.
 
-# The global variables users_db, notes_db, user_id_counter, note_id_counter, current_user_id
-# are now expected to be defined and managed in app.py.
-# We will import them or receive them from app.py context.
-
-# For this iteration, assume app.py makes them available in the Flask app context
-# or we modify app.py to pass them to the blueprint registration.
-# A cleaner way is to use Flask's application context 'g' or pass instances.
-
-# To make this runnable standalone initially, then integrate:
-# from flask import current_app # To access app.users_db etc.
-# However, for the current plan of merging into one file, direct access after merge is assumed.
-
-# Let's get the global variables from app.py directly.
-# This is not standard for Blueprints but will work once merged.
-# If app.py runs this code directly (by importing functions or merging), it's fine.
-from app import users_db, notes_db, user_id_counter as app_user_id_counter, \
-                note_id_counter as app_note_id_counter, \
-                current_user_id as app_current_user_id
-from models import User, Note # User and Note classes
 from flask import Blueprint, request, jsonify
-
+from models import User, Note # SQLAlchemy models
+import app as main_app # To access main_app.current_user_id and get_db_session
 
 api_bp = Blueprint('api', __name__)
 
-# --- Helper Functions ---
-# These helpers will now use the lists from app.py
-def find_user_by_email(email):
-    for user in users_db: # Uses users_db from app.py
-        if user.email == email:
-            return user
-    return None
+# Helper function to get the current user object from DB
+def get_current_user():
+    if main_app.current_user_id is None:
+        return None
+    session = main_app.get_db_session()
+    return session.query(User).get(main_app.current_user_id)
 
-def find_user_by_id(user_id):
-    for user in users_db: # Uses users_db from app.py
-        if user.id == user_id:
-            return user
-    return None
-
-def find_note_by_id(note_id):
-    for note in notes_db: # Uses notes_db from app.py
-        if note.id == note_id:
-            return note
-    return None
-
-# --- Routes ---
 @api_bp.route('/register', methods=['POST'])
 def register_user_route():
-    # Use global counters from app.py
-    # To modify global variables from app.py, we need to declare them global here too,
-    # or better, have app.py functions manage them.
-    # For now, we assume app.py's counters are directly modifiable or app.py handles increment.
-    # This is a tricky part with blueprints and global state not in app context.
-    # Simplification: Assume these routes will be merged into app.py
-
     data = request.get_json()
     if not data or not data.get('name') or not data.get('email') or not data.get('password'):
         return jsonify({"message": "Missing required fields"}), 400
 
-    if find_user_by_email(data['email']): # Uses app.users_db via helper
+    session = main_app.get_db_session()
+
+    # Check for existing user by email or name
+    existing_by_email = session.query(User).filter_by(email=data['email']).first()
+    if existing_by_email:
         return jsonify({"message": "Email already registered"}), 409
-    if any(user.name == data['name'] for user in users_db): # Uses app.users_db
+
+    existing_by_name = session.query(User).filter_by(name=data['name']).first()
+    if existing_by_name:
         return jsonify({"message": "Username already taken"}), 409
 
-    # Accessing and modifying global counters from app.py is problematic here.
-    # This part needs to be in app.py or counters managed via app context.
-    # For now, let's assume this function will be moved to app.py or app.py updates counters.
-    # Let's pretend we have a way to get the next ID.
-    # In app.py, user_id_counter is global. If routes.py is imported by app.py,
-    # it needs to refer to app.user_id_counter.
-    # The import `from app import user_id_counter as app_user_id_counter` gives us read access.
-    # To modify, we'd need `import app` and then `app.user_id_counter +=1`.
+    # In a real app, hash the password here: e.g., User(..., password_hash=generate_hash(data['password']))
+    # For mock, password stored as is in password_hash field.
+    new_user = User(name=data['name'], email=data['email'], password=data['password'])
 
-    import app # Required to modify app's global variables
+    try:
+        session.add(new_user)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        # Check if the exception is due to our mock unique constraint
+        if "MockDB IntegrityError" in str(e):
+             return jsonify({"message": str(e)}), 409
+        return jsonify({"message": f"Could not register user: {str(e)}"}), 500
 
-    new_user = User(id=app.user_id_counter, name=data['name'], email=data['email'], password=data['password'])
-    app.users_db.append(new_user)
-    app.user_id_counter += 1
     return jsonify({"message": "User registered successfully", "user": new_user.to_dict()}), 201
 
 @api_bp.route('/login', methods=['POST'])
 def login_user_route():
-    import app # Required to modify app.current_user_id
-
     data = request.get_json()
     if not data or not data.get('email') or not data.get('password'):
         return jsonify({"message": "Email and password are required"}), 400
 
-    user = find_user_by_email(data['email']) # Uses app.users_db
-    if user and user.password == data['password']: # Plain text password check
-        app.current_user_id = user.id # Modify app's global current_user_id
+    session = main_app.get_db_session()
+    user = session.query(User).filter_by(email=data['email']).first()
+
+    # user.check_password will compare plain text for mock
+    if user and user.check_password(data['password']):
+        main_app.current_user_id = user.id # Simulate session/token by setting global var
         return jsonify({"message": "Login successful", "user_id": user.id, "is_admin": user.admin}), 200
+
     return jsonify({"message": "Invalid credentials"}), 401
 
 @api_bp.route('/logout', methods=['POST'])
 def logout_user_route():
-    import app # Required to modify app.current_user_id
-    if app.current_user_id is None:
+    if main_app.current_user_id is None:
         return jsonify({"message": "Not currently logged in"}), 400
-    logged_out_user_id = app.current_user_id
-    app.current_user_id = None # Modify app's global
+
+    logged_out_user_id = main_app.current_user_id
+    main_app.current_user_id = None
     return jsonify({"message": "Logout successful", "user_id": logged_out_user_id}), 200
 
 # --- Notes Routes (Protected) ---
 @api_bp.route('/notes', methods=['POST'])
 def create_note_route():
-    import app # Required for app.note_id_counter, app.current_user_id, app.notes_db
-    if app.current_user_id is None:
+    current_user = get_current_user()
+    if not current_user:
         return jsonify({"message": "Authentication required"}), 401
 
     data = request.get_json()
     if not data or not data.get('title') or not data.get('content'):
         return jsonify({"message": "Title and content are required"}), 400
 
-    new_note = Note(id=app.note_id_counter, title=data['title'], content=data['content'], owner_id=app.current_user_id)
-    app.notes_db.append(new_note)
-    app.note_id_counter += 1
+    session = main_app.get_db_session()
+    new_note = Note(title=data['title'], content=data['content'], owner_id=current_user.id)
+
+    try:
+        session.add(new_note)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        return jsonify({"message": f"Could not create note: {str(e)}"}), 500
+
     return jsonify({"message": "Note created successfully", "note": new_note.to_dict()}), 201
 
 @api_bp.route('/notes', methods=['GET'])
 def get_user_notes_route():
-    import app # Required for app.current_user_id, app.notes_db
-    if app.current_user_id is None:
+    current_user = get_current_user()
+    if not current_user:
         return jsonify({"message": "Authentication required"}), 401
 
-    user_notes = [note.to_dict() for note in app.notes_db if note.owner_id == app.current_user_id]
-    return jsonify(user_notes), 200
+    session = main_app.get_db_session()
+    # Using relationship (if lazy='dynamic', this would be current_user.notes.all())
+    # For lazy='True' (default or specified), current_user.notes is already a list
+    # Or query directly:
+    user_notes_query = session.query(Note).filter_by(owner_id=current_user.id)
+    user_notes = user_notes_query.all()
+
+    return jsonify([note.to_dict() for note in user_notes]), 200
 
 @api_bp.route('/notes/<int:note_id>', methods=['GET'])
 def get_note_by_id_route(note_id):
-    import app # Required for app.current_user_id
-    if app.current_user_id is None:
+    current_user = get_current_user()
+    if not current_user:
         return jsonify({"message": "Authentication required"}), 401
 
-    note = find_note_by_id(note_id) # Uses app.notes_db
+    session = main_app.get_db_session()
+    note = session.query(Note).get(note_id)
+
     if not note:
         return jsonify({"message": "Note not found"}), 404
 
-    requesting_user = find_user_by_id(app.current_user_id) # Uses app.users_db
-    if note.owner_id != app.current_user_id and (not requesting_user or not requesting_user.admin):
+    if note.owner_id != current_user.id and not current_user.admin:
         return jsonify({"message": "Access forbidden"}), 403
+
     return jsonify(note.to_dict()), 200
 
 @api_bp.route('/notes/<int:note_id>', methods=['PUT'])
 def update_note_route(note_id):
-    import app # Required for app.current_user_id
-    if app.current_user_id is None:
+    current_user = get_current_user()
+    if not current_user:
         return jsonify({"message": "Authentication required"}), 401
 
-    note = find_note_by_id(note_id) # Uses app.notes_db
+    session = main_app.get_db_session()
+    note = session.query(Note).get(note_id)
+
     if not note:
         return jsonify({"message": "Note not found"}), 404
-    if note.owner_id != app.current_user_id: # Only owner can update
+
+    if note.owner_id != current_user.id: # Only owner can update
         return jsonify({"message": "Access forbidden: You are not the owner"}), 403
 
     data = request.get_json()
     if not data:
         return jsonify({"message": "No data provided for update"}), 400
 
-    note.title = data.get('title', note.title)
-    note.content = data.get('content', note.content)
-    # No need to re-append to app.notes_db as 'note' is a reference to the object in the list
+    updated = False
+    if 'title' in data:
+        note.title = data['title']
+        updated = True
+    if 'content' in data:
+        note.content = data['content']
+        updated = True
+
+    if updated:
+        try:
+            # session.add(note) # Not strictly necessary if object is already in session and modified
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            return jsonify({"message": f"Could not update note: {str(e)}"}), 500
+
     return jsonify({"message": "Note updated successfully", "note": note.to_dict()}), 200
 
 @api_bp.route('/notes/<int:note_id>', methods=['DELETE'])
 def delete_note_route(note_id):
-    import app # Required for app.current_user_id, app.notes_db
-    if app.current_user_id is None:
+    current_user = get_current_user()
+    if not current_user:
         return jsonify({"message": "Authentication required"}), 401
 
-    note_to_delete = find_note_by_id(note_id) # Uses app.notes_db
+    session = main_app.get_db_session()
+    note_to_delete = session.query(Note).get(note_id)
+
     if not note_to_delete:
         return jsonify({"message": "Note not found"}), 404
 
-    requesting_user = find_user_by_id(app.current_user_id) # Uses app.users_db
-    if not requesting_user:
-         return jsonify({"message": "Requesting user not found"}), 500
-
-    if note_to_delete.owner_id != app.current_user_id and not requesting_user.admin:
+    if note_to_delete.owner_id != current_user.id and not current_user.admin:
         return jsonify({"message": "Access forbidden: You are not the owner or an admin"}), 403
 
-    app.notes_db.remove(note_to_delete)
+    try:
+        session.delete(note_to_delete)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        return jsonify({"message": f"Could not delete note: {str(e)}"}), 500
+
     return jsonify({"message": "Note deleted successfully"}), 200
 
 # --- Admin Routes ---
 @api_bp.route('/admin/users/<int:user_id_to_delete>', methods=['DELETE'])
 def delete_user_by_admin_route(user_id_to_delete):
-    import app # Required for app globals
-    if app.current_user_id is None:
-        return jsonify({"message": "Authentication required"}), 401
-
-    admin_user = find_user_by_id(app.current_user_id) # Uses app.users_db
+    admin_user = get_current_user()
     if not admin_user or not admin_user.admin:
         return jsonify({"message": "Administrator access required"}), 403
 
-    user_to_delete = find_user_by_id(user_id_to_delete) # Uses app.users_db
+    if admin_user.id == user_id_to_delete:
+        return jsonify({"message": "Admin cannot delete themselves"}), 403
+
+    session = main_app.get_db_session()
+    user_to_delete = session.query(User).get(user_id_to_delete)
+
     if not user_to_delete:
         return jsonify({"message": "User to delete not found"}), 404
 
-    if user_to_delete.id == app.current_user_id : # Admin cannot delete themselves
-        return jsonify({"message": "Admin cannot delete themselves"}), 403
+    try:
+        # Notes will be cascade deleted due to model relationship `cascade="all, delete-orphan"`
+        # and MockDBSession's commit logic handles this for users.
+        session.delete(user_to_delete)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        return jsonify({"message": f"Could not delete user: {str(e)}"}), 500
 
-    # Filter notes: note that this creates a new list.
-    app.notes_db = [note for note in app.notes_db if note.owner_id != user_id_to_delete]
-    app.users_db.remove(user_to_delete)
-
-    return jsonify({"message": f"User {user_to_delete.name} and their notes deleted successfully"}), 200
+    return jsonify({"message": f"User '{user_to_delete.name}' and their notes deleted successfully"}), 200
 
 @api_bp.route('/admin/users', methods=['GET'])
 def get_all_users_route():
-    import app # Required for app.current_user_id
-    if app.current_user_id is None:
-        return jsonify({"message": "Authentication required"}), 401
-
-    admin_user = find_user_by_id(app.current_user_id) # Uses app.users_db
+    admin_user = get_current_user()
     if not admin_user or not admin_user.admin:
         return jsonify({"message": "Administrator access required"}), 403
 
-    return jsonify([user.to_dict() for user in app.users_db]), 200 # Uses app.users_db
+    session = main_app.get_db_session()
+    all_users = session.query(User).all()
+    return jsonify([user.to_dict() for user in all_users]), 200
 
 @api_bp.route('/admin/notes', methods=['GET'])
 def get_all_notes_route():
-    import app # Required for app.current_user_id
-    if app.current_user_id is None:
-        return jsonify({"message": "Authentication required"}), 401
-
-    admin_user = find_user_by_id(app.current_user_id) # Uses app.users_db
+    admin_user = get_current_user()
     if not admin_user or not admin_user.admin:
         return jsonify({"message": "Administrator access required"}), 403
 
-    return jsonify([note.to_dict() for note in app.notes_db]), 200 # Uses app.notes_db
+    session = main_app.get_db_session()
+    all_notes = session.query(Note).all()
+    return jsonify([note.to_dict() for note in all_notes]), 200
