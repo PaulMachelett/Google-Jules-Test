@@ -1,11 +1,4 @@
 from flask import Blueprint, request, jsonify
-from models import User, Note
-# Assuming app.py will initialize users_db, notes_db, user_id_counter, note_id_counter, and current_user_id
-# We might need to pass these to the blueprint or manage them differently.
-# For simplicity now, we'll assume they are accessible globally from app.py,
-# which is not ideal but works for a single file structure that will be combined later.
-
-from flask import Blueprint, request, jsonify
 from models import User, Note # SQLAlchemy models
 import app as main_app # To access main_app.current_user_id and get_db_session
 

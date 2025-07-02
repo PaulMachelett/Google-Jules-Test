@@ -195,8 +195,10 @@ def initialize_dummy_data():
 # Import and register blueprints
 # This needs to be after db, MockDBSession, and get_db_session are defined.
 # Also, models.py needs to be updated to import 'db' from 'app' now.
-from routes import api_bp # routes.py will need adjustments for get_db_session
-app.register_blueprint(api_bp, url_prefix='/api')
+
+# Defer blueprint import and registration
+# from routes import api_bp # routes.py will need adjustments for get_db_session
+# app.register_blueprint(api_bp, url_prefix='/api')
 
 
 def create_mock_tables():
@@ -206,6 +208,15 @@ def create_mock_tables():
     mock_db_session_instance.clear_all_data()
     print("Mock 'create_tables' called. MockDBSession cleared and ready.")
 
+# Function to register blueprints to break circular import
+def register_blueprints(flask_app):
+    from routes import api_bp # Import here, when app and db are defined
+    flask_app.register_blueprint(api_bp, url_prefix='/api')
+    print("Registered API blueprint at /api")
+
+# Call after app and db are initialized, but before running the app
+register_blueprints(app)
+
 
 if __name__ == '__main__':
     with app.app_context():
@@ -213,6 +224,6 @@ if __name__ == '__main__':
         create_mock_tables()
         initialize_dummy_data()
 
-    print("Registered API blueprint at /api")
+    # print("Registered API blueprint at /api") # Moved into register_blueprints
     print("SQLAlchemy configured for 'sqlite:///:memory:' (simulated with MockDBSession in app.py).")
     app.run(debug=True)
